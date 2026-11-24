@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Telegram OIDC Test RP — M5 matrix helper</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#111}
+h1{font-size:20px} h2{font-size:16px;margin-top:28px}
+label{display:block;margin:8px 0 2px;font-weight:600;font-size:13px}
+input,select{width:100%;padding:8px;font-size:14px;box-sizing:border-box}
+button{margin:12px 8px 0 0;padding:10px 16px;font-size:14px;cursor:pointer}
+pre{background:#f4f4f4;padding:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;font-size:13px}
+.note{background:#fff8e1;border:1px solid #e6c200;padding:10px;font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+td,th{border:1px solid #ccc;padding:6px;text-align:left}
+td input{width:100%}
+.warn{color:#a00;font-weight:700}
+</style>
+</head>
+<body>
+<h1>Telegram OIDC Test RP — M5 matrix helper</h1>
+<p class="note"><b>Test environment only. Own test bot, own redirect URIs, own test accounts.</b>
+Fill in your test bot's data, pick a matrix variant, and this page builds the exact
+authorization URL. The redirect URI does <b>not</b> need to be live for the 1.1 tests:
+if Telegram accepts it, the browser is redirected there with <code>?code=…</code> visible
+in the address bar even if the page fails to load. Record accept vs reject for each variant.</p>
+
+<h2>1. Bot / RP settings</h2>
+<label>Bot ID (= client_id, from @BotFather)</label>
+<input id="client_id" placeholder="e.g. 1234567890">
+<label>Registered Allowed URL (exact string registered in @BotFather)</label>
+<input id="allowed" placeholder="e.g. https://example.test/callback">
+<label>Redirect URI to test (variant)</label>
+<input id="redirect_uri" placeholder="defaults to the Allowed URL above">
+<label>Scope</label>
+<input id="scope" value="openid">
+<label>code_challenge_method</label>
+<select id="ccm"><option value="S256">S256</option><option value="plain">plain</option><option value="">(omit PKCE — test 1.2c)</option></select>
+<label>state (leave blank to auto-generate; clear to test 1.2a omit)</label>
+<input id="state" placeholder="auto">
+<label>nonce (leave blank to auto-generate; clear to test 1.2b omit)</label>
+<input id="nonce" placeholder="auto">
+
+<button onclick="build()">Build authorization URL</button>
+<button onclick="openAuth()">Open authorization URL</button>
+
+<h2>2. Authorization URL</h2>
+<pre id="url">(not built yet)</pre>
+<p>code_verifier (keep secret — needed for the token exchange; shown here only so you can copy it into the curl command):</p>
+<pre id="verifier">(generated on build)</pre>
+
+<h2>3. Callback result</h2>
+<pre id="cb">(open this page as the redirect target, or paste the redirected URL's query here)</pre>
+<label>Paste redirected URL (if the redirect target is not this page)</label>
+<input id="paste" placeholder="https://…?code=…&state=…">
+<button onclick="parsePaste()">Parse pasted URL</button>
+
+<h2>4. Token exchange (run in a terminal — never paste client_secret into a page)</h2>
+<pre id="curl">(build the URL first)</pre>
+
+<h2>5. Variant matrix — record accept / reject</h2>
+<table>
+<tr><th>Test</th><th>redirect_uri variant</th><th>Result</th></tr>
+<tr><td>1.1a control</td><td>exact Allowed URL</td><td><input placeholder="accept / reject + error"></td></tr>
+<tr><td>1.1b</td><td>Allowed URL + /extra/path</td><td><input></td></tr>
+<tr><td>1.1c</td><td>Allowed URL + ?x=1</td><td><input></td></tr>
+<tr><td>1.1d</td><td>subdomain of registered host</td><td><input></td></tr>
+<tr><td>1.1e</td><td>sibling host (registered-host.evil.example)</td><td><input></td></tr>
+<tr><td>1.1f</td><td>http:// instead of https://</td><td><input></td></tr>
+<tr><td>1.1g</td><td>trailing-slash difference</td><td><input></td></tr>
+<tr><td>1.1h</td><td>host case variation</td><td><input></td></tr>
+<tr><td>1.1i</td><td>unrelated URI (evil.example)</td><td><input></td></tr>
+<tr><td>1.2a</td><td>state omitted</td><td><input></td></tr>
+<tr><td>1.2b</td><td>nonce omitted</td><td><input></td></tr>
+<tr><td>1.2c</td><td>PKCE omitted</td><td><input></td></tr>
+<tr><td>1.2d</td><td>code_challenge_method=plain</td><td><input></td></tr>
+<tr><td>1.3a</td><td>same code exchanged twice (2nd must fail)</td><td><input></td></tr>
+<tr><td>1.3c</td><td>code exchanged with different redirect_uri (must fail)</td><td><input></td></tr>
+</table>
+<p class="warn">Finding if: any 1.1 variant other than the exact match receives a code; 1.2e/1.2f/1.2g
+(wrong/missing code_verifier) succeeds; 1.3a second exchange succeeds; 1.3c succeeds.</p>
+
+<script>
+let last = {};
+function rand(n){const a=new Uint8Array(n);crypto.getRandomValues(a);return [...a].map(b=>b.toString(16).padStart(2,'0')).join('');}
+async function sha256b64url(s){
+  const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));
+  return btoa(String.fromCharCode(...new Uint8Array(d))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function build(){
+  const cid=document.getElementById('client_id').value.trim();
+  const allowed=document.getElementById('allowed').value.trim();
+  const redir=document.getElementById('redirect_uri').value.trim()||allowed;
+  const scope=document.getElementById('scope').value.trim()||'openid';
+  const ccm=document.getElementById('ccm').value;
+  let state=document.getElementById('state').value.trim();
+  let nonce=document.getElementById('nonce').value.trim();
+  if(state==='auto'||!document.getElementById('state').value) state=rand(16);
+  if(nonce==='auto'||!document.getElementById('nonce').value) nonce=rand(16);
+  const verifier=rand(32);
+  const p=new URLSearchParams({client_id:cid,response_type:'code',redirect_uri:redir,scope});
+  if(state) p.set('state',state);
+  if(nonce) p.set('nonce',nonce);
+  if(ccm){p.set('code_challenge_method',ccm);p.set('code_challenge',ccm==='S256'?await sha256b64url(verifier):verifier);}
+  const url='https://oauth.telegram.org/auth?'+p.toString();
+  document.getElementById('url').textContent=url;
+  document.getElementById('verifier').textContent=verifier+'   (method: '+(ccm||'none')+')';
+  last={url,verifier,redir,state,nonce,cid};
+  document.getElementById('curl').textContent=
+   '# client_secret_basic (replace <secret> with the Client Secret from @BotFather → Login Widget.\n'+
+   '# WARNING: the Client Secret is a SEPARATE secret shown in the Login Widget section —\n'+
+   '# it is NOT the bot token. Using the bot token gives invalid_client.):\n'+
+   'curl -s -X POST https://oauth.telegram.org/token \\\n'+
+   '  -u "'+cid+':<secret>" \\\n'+
+   '  -d "grant_type=authorization_code&code=<CODE>&redirect_uri='+encodeURIComponent(redir)+'" \\\n'+
+   '  -d "code_verifier='+verifier+'"\n\n'+
+   '# client_secret_post variant:\n'+
+   'curl -s -X POST https://oauth.telegram.org/token \\\n'+
+   '  -d "grant_type=authorization_code&code=<CODE>&redirect_uri='+encodeURIComponent(redir)+'" \\\n'+
+   '  -d "code_verifier='+verifier+'&client_id='+cid+'&client_secret=<secret>"';
+}
+function openAuth(){if(last.url) window.open(last.url,'_blank');}
+function showParams(q){
+  const o={};q.forEach((v,k)=>o[k]=v);
+  document.getElementById('cb').textContent=JSON.stringify(o,null,2)+
+    (o.code?'\n\nCode received. Exchange it with the curl commands above, then verify the ID token:\n.venv/bin/python idtoken-verify.py --token \'<id_token>\' --aud '+ (last.cid||'<bot_id>') +' --nonce '+ (last.nonce||'<nonce>'):'')+
+    (o.error?'\n\nREJECTED: '+o.error+(o.error_description?' — '+o.error_description:'' ):'');
+}
+function parsePaste(){
+  const v=document.getElementById('paste').value.trim();
+  try{showParams(new URL(v).searchParams);}catch(e){document.getElementById('cb').textContent='bad URL: '+e;}
+}
+if(location.search.length>1) showParams(new URLSearchParams(location.search));
+</script>
+</body>
+</html>
