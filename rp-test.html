@@ -19,11 +19,13 @@ td input{width:100%}
 </head>
 <body>
 <h1>Telegram OIDC Test RP — M5 matrix helper</h1>
-<p class="note"><b>Test environment only. Own test bot, own redirect URIs, own test accounts.</b>
-Fill in your test bot's data, pick a matrix variant, and this page builds the exact
+<p class="note"><b>Production test — own production bot, own redirect URIs, own production account.</b>
+Fill in your bot's data, pick a matrix variant, and this page builds the exact
 authorization URL. The redirect URI does <b>not</b> need to be live for the 1.1 tests:
 if Telegram accepts it, the browser is redirected there with <code>?code=…</code> visible
-in the address bar even if the page fails to load. Record accept vs reject for each variant.</p>
+in the address bar even if the page fails to load. Record accept vs reject for each variant.
+The <code>origin</code> parameter is required by oauth.telegram.org (proven 24 Nov — a request
+without it is rejected with "origin required").</p>
 
 <h2>1. Bot / RP settings</h2>
 <label>Bot ID (= client_id, from @BotFather)</label>
@@ -32,6 +34,8 @@ in the address bar even if the page fails to load. Record accept vs reject for e
 <input id="allowed" placeholder="e.g. https://example.test/callback">
 <label>Redirect URI to test (variant)</label>
 <input id="redirect_uri" placeholder="defaults to the Allowed URL above">
+<label>Origin (required by oauth.telegram.org — leave blank to auto-derive from the redirect URI)</label>
+<input id="origin" placeholder="auto">
 <label>Scope</label>
 <input id="scope" value="openid">
 <label>code_challenge_method</label>
@@ -98,14 +102,17 @@ async function build(){
   if(state==='auto'||!document.getElementById('state').value) state=rand(16);
   if(nonce==='auto'||!document.getElementById('nonce').value) nonce=rand(16);
   const verifier=rand(32);
+  let origin=document.getElementById('origin').value.trim();
+  if(!origin){try{origin=new URL(redir).origin;}catch(e){origin='';}}
   const p=new URLSearchParams({client_id:cid,response_type:'code',redirect_uri:redir,scope});
+  if(origin) p.set('origin',origin);
   if(state) p.set('state',state);
   if(nonce) p.set('nonce',nonce);
   if(ccm){p.set('code_challenge_method',ccm);p.set('code_challenge',ccm==='S256'?await sha256b64url(verifier):verifier);}
   const url='https://oauth.telegram.org/auth?'+p.toString();
   document.getElementById('url').textContent=url;
   document.getElementById('verifier').textContent=verifier+'   (method: '+(ccm||'none')+')';
-  last={url,verifier,redir,state,nonce,cid};
+  last={url,verifier,redir,state,nonce,cid,origin};
   document.getElementById('curl').textContent=
    '# client_secret_basic (replace <secret> with the Client Secret from @BotFather → Login Widget.\n'+
    '# WARNING: the Client Secret is a SEPARATE secret shown in the Login Widget section —\n'+
